@@ -1,0 +1,54 @@
+# tg-relay: шлюз + PostgreSQL одной командой.
+#
+#   make env                     # .env со случайными секретами (или cp .env.example .env)
+#   docker compose up -d --build
+#
+# Шлюз слушает http://localhost:8080. В бою поставьте перед ним TLS-прокси
+# (Caddy, nginx, Traefik) — пример в deploy/Caddyfile.
+
+services:
+  gateway:
+    build: .
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://relay:${POSTGRES_PASSWORD:?задайте в .env}@postgres:5432/relay
+      BOOTSTRAP_KEY: ${BOOTSTRAP_KEY:?задайте в .env}
+      UPSTREAM_URL: ${UPSTREAM_URL:-https://api.telegram.org}
+      UPSTREAM_READ_TIMEOUT: "0"   # 0 = без ограничения; иначе ломается long polling
+      ENFORCE_LIMITS: ${ENFORCE_LIMITS:-true}
+      STATS_ENABLED: ${STATS_ENABLED:-true}
+      NODE_NAME: ${NODE_NAME:-edge-1}
+      LOG_FORMAT: ${LOG_FORMAT:-json}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    ports:
+      - "${LISTEN_PORT:-8080}:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    # Больше, чем SHUTDOWN_GRACE (90 с): иначе Docker убьёт процесс раньше,
+    # чем завершатся висящие long poll.
+    stop_grace_period: 120s
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: relay
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?задайте в .env}
+      POSTGRES_DB: relay
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U relay -d relay"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    # Порт наружу не публикуется.
+
+volumes:
+  pgdata:

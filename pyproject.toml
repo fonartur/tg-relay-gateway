@@ -1,0 +1,107 @@
+[build-system]
+requires = ["hatchling>=1.24"]
+build-backend = "hatchling.build"
+
+[project]
+name = "tg-relay"
+version = "1.0.0"
+description = "Прозрачный HTTP-шлюз к Telegram Bot API: меняете базовый URL — и всё работает"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.11"
+authors = [{ name = "tg-relay contributors" }]
+keywords = ["telegram", "bot-api", "proxy", "gateway", "reverse-proxy", "long-polling"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Framework :: AsyncIO",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Internet :: Proxy Servers",
+    "Typing :: Typed",
+]
+dependencies = [
+    "starlette>=0.37,<2",
+    "uvicorn[standard]>=0.27,<1",
+    "httpx>=0.27,<1",
+    "asyncpg>=0.29,<1",
+    "prometheus-client>=0.20,<1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.23",
+    "asgi-lifespan>=2.1",
+    "aiogram>=3.4",   # проверка совместимости настоящим фреймворком
+    "requests>=2.31", # и голым синхронным клиентом
+    "ruff>=0.6",
+    "mypy>=1.10",
+    "asyncpg-stubs>=0.29",
+]
+
+[project.urls]
+Homepage = "https://tg-relay.scriptora.ru"
+Documentation = "https://tg-relay.scriptora.ru/docs"
+Status = "https://tg-relay.scriptora.ru/status"
+
+[project.scripts]
+tg-relay = "tg_relay.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/tg_relay"]
+
+# ---------------------------------------------------------------- тесты ---
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+pythonpath = ["src"]
+markers = [
+    "postgres: тест требует PostgreSQL (TEST_DATABASE_URL)",
+]
+filterwarnings = ["ignore::DeprecationWarning"]
+
+# --------------------------------------------------------------- линтер ---
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E", "W",  # pycodestyle
+    "F",       # pyflakes
+    "I",       # isort
+    "B",       # bugbear
+    "UP",      # pyupgrade
+    "SIM",     # simplify
+    "RUF",     # ruff-specific
+    "ASYNC",   # asyncio-ловушки
+    "PT",      # pytest-стиль
+]
+ignore = [
+    "RUF001", "RUF002", "RUF003",  # кириллица в строках и комментариях — намеренно
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["tg_relay"]
+
+# ------------------------------------------------------------ типизация ---
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+mypy_path = "src"
+files = ["src", "tests", "benchmarks"]
+explicit_package_bases = true
+
+[[tool.mypy.overrides]]
+module = ["prometheus_client.*"]
+ignore_missing_imports = true

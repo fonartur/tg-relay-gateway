@@ -1,0 +1,16 @@
+# TLS-терминация перед шлюзом. Caddy сам получает и продлевает сертификат.
+#
+#   DOMAIN=relay.example.com caddy run --config deploy/Caddyfile
+#
+{$DOMAIN} {
+	reverse_proxy gateway:8080 {
+		# Отдавать байты клиенту сразу, без буферизации.
+		flush_interval -1
+		transport http {
+			# 0 = без таймаута: getUpdates держит соединение до 60 с.
+			read_timeout 0
+			write_timeout 0
+		}
+	}
+	# encode не включаем: шлюз отдаёт байты upstream как есть, пережимать их нельзя.
+}
