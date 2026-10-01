@@ -31,7 +31,7 @@ Command = Callable[[argparse.Namespace, ProjectAdmin], Awaitable[int]]
 async def _create_project(args: argparse.Namespace, admin: ProjectAdmin) -> int:
     limits = Limits(
         rate_per_second=args.rate,
-        monthly_bots=args.bots,
+        active_bots=args.bots,
         monthly_bytes=int(args.gb * GIB),
     )
     project_id, key = await admin.create_project(args.name, limits)
@@ -54,7 +54,7 @@ async def _list_projects(_: argparse.Namespace, admin: ProjectAdmin) -> int:
     for p in await admin.list_projects():
         print(
             f"{p.id:>4}  {p.name:<20.20} {'y' if p.enabled else 'n':<3} "
-            f"{p.limits.rate_per_second:>5} {p.limits.monthly_bots:>6} "
+            f"{p.limits.rate_per_second:>5} {p.limits.active_bots:>6} "
             f"{p.limits.monthly_bytes / GIB:>6.0f} {p.active_keys:>4}"
         )
     return 0
@@ -94,7 +94,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--name", required=True)
     p.add_argument("--rate", type=_non_negative_int, default=30, help="запросов/с, 0 — без лимита")
     p.add_argument(
-        "--bots", type=_non_negative_int, default=0, help="ботов в месяц, 0 — без лимита"
+        "--bots",
+        type=_non_negative_int,
+        default=0,
+        help="ботов, работающих одновременно; 0 — без лимита",
     )
     p.add_argument(
         "--gb", type=_non_negative_float, default=0, help="ГиБ трафика в месяц, 0 — без лимита"

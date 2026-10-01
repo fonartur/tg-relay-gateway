@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from datetime import timedelta
+
 import pytest
 
+from tg_relay.application.active_bots import ActiveBots
 from tg_relay.application.context import IncomingRequest, RequestContext
 from tg_relay.application.filters import (
     AuthFilter,
@@ -53,36 +56,71 @@ class TestAuth:
 
 
 class TestQuota:
+    @staticmethod
+    def make(ledger: UsageLedger | None = None) -> tuple[QuotaFilter, ActiveBots, FrozenClock]:
+        clock = FrozenClock()
+        bots = ActiveBots(timedelta(minutes=5), clock)
+        return QuotaFilter(ledger or UsageLedger(), bots, clock), bots, clock
+
     async def test_traffic_limit(self) -> None:
         ledger = UsageLedger()
         ledger.on_request_finished(outcome(bytes_in=1000, bytes_out=0))
-        quota = QuotaFilter(ledger, FrozenClock())
+        quota, _, _ = self.make(ledger)
         with pytest.raises(QuotaExceeded, match="traffic"):
             await quota(make_ctx(project=access(monthly_bytes=1000)))
 
-    async def test_known_bot_passes_even_at_bot_limit(self) -> None:
-        ledger = UsageLedger()
-        ledger.on_request_finished(outcome(fingerprint="fp0000000001"))
-        await QuotaFilter(ledger, FrozenClock())(
-            make_ctx(project=access(monthly_bots=1), fingerprint="fp0000000001")
-        )
+    async def test_working_bot_keeps_its_place(self) -> None:
+        quota, _, _ = self.make()
+        project = access(active_bots=1)
+        await quota(make_ctx(project=project, fingerprint="bot_a"))
+        await quota(make_ctx(project=project, fingerprint="bot_a"))
 
     async def test_new_bot_over_limit_is_rejected(self) -> None:
-        ledger = UsageLedger()
-        ledger.on_request_finished(outcome(fingerprint="fp0000000001"))
+        quota, _, _ = self.make()
+        project = access(active_bots=1)
+        await quota(make_ctx(project=project, fingerprint="bot_a"))
         with pytest.raises(QuotaExceeded, match="bots"):
-            await QuotaFilter(ledger, FrozenClock())(
-                make_ctx(project=access(monthly_bots=1), fingerprint="fp0000000002")
-            )
+            await quota(make_ctx(project=project, fingerprint="bot_b"))
+
+    async def test_rejected_bot_stays_rejected(self) -> None:
+        """Регрессия: второй запрос отклонённого бота не должен проходить."""
+        quota, _, _ = self.make()
+        project = access(active_bots=1)
+        await quota(make_ctx(project=project, fingerprint="bot_a"))
+        for _ in range(3):
+            with pytest.raises(QuotaExceeded):
+                await quota(make_ctx(project=project, fingerprint="bot_b"))
+
+    async def test_silent_bot_frees_its_place(self) -> None:
+        """Выключили одного бота, включили другого — это по-прежнему один бот."""
+        quota, _, clock = self.make()
+        project = access(active_bots=1)
+        await quota(make_ctx(project=project, fingerprint="bot_a"))
+        clock.now += timedelta(minutes=6)
+        await quota(make_ctx(project=project, fingerprint="bot_b"))
+
+    async def test_bot_is_counted_from_its_first_request(self) -> None:
+        """Место занимается сразу, ещё до ответа upstream (первый запрос — long poll)."""
+        quota, bots, _ = self.make()
+        await quota(make_ctx(project=access(active_bots=2), fingerprint="bot_a"))
+        assert bots.is_active(1, "bot_a")
 
     async def test_zero_means_unlimited(self) -> None:
         ledger = UsageLedger()
         ledger.on_request_finished(outcome(bytes_in=10**12))
-        await QuotaFilter(ledger, FrozenClock())(make_ctx(project=access()))
+        quota, _, _ = self.make(ledger)
+        for n in range(50):
+            await quota(make_ctx(project=access(), fingerprint=f"bot_{n}"))
+
+    async def test_requests_without_token_are_not_bots(self) -> None:
+        quota, bots, _ = self.make()
+        await quota(make_ctx(project=access(active_bots=1), fingerprint=None))
+        assert bots.count(1) == 0
 
     async def test_requires_auth_before_it(self) -> None:
+        quota, _, _ = self.make()
         with pytest.raises(RuntimeError):
-            await QuotaFilter(UsageLedger(), FrozenClock())(make_ctx())
+            await quota(make_ctx())
 
 
 class TestRateLimit:

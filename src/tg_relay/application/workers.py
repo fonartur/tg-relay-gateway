@@ -17,6 +17,7 @@ from ..domain.models import billing_month
 from ..ports.keys import KeySource
 from ..ports.stats import StatsRepository
 from ..ports.usage import UsageRepository
+from .active_bots import ActiveBots
 from .key_registry import KeyRegistry
 from .rate_limiter import RateLimiter
 from .stats_collector import StatsCollector
@@ -31,7 +32,8 @@ RATE_BUCKET_IDLE_SECONDS = 600.0
 
 
 class KeySync:
-    """Перечитывает ключи и итоги месяца (для лимитов) из хранилища."""
+    """Перечитывает из хранилища ключи и данные для лимитов: трафик месяца и
+    активность ботов (в том числе на других узлах и до рестарта этого)."""
 
     def __init__(
         self,
@@ -40,6 +42,7 @@ class KeySync:
         registry: KeyRegistry,
         usage: UsageRepository | None = None,
         ledger: UsageLedger | None = None,
+        active_bots: ActiveBots | None = None,
         limiter: RateLimiter | None = None,
         clock: Callable[[], datetime],
     ) -> None:
@@ -47,6 +50,7 @@ class KeySync:
         self._registry = registry
         self._usage = usage
         self._ledger = ledger
+        self._active_bots = active_bots
         self._limiter = limiter
         self._clock = clock
 
@@ -62,6 +66,15 @@ class KeySync:
                 self._ledger.sync(await self._usage.load_month(billing_month(self._clock())))
             except Exception:
                 log.warning("month usage refresh failed", exc_info=True)
+
+        if self._active_bots is not None:
+            if self._usage is not None:
+                try:
+                    since = self._active_bots.since()
+                    self._active_bots.merge(await self._usage.load_bot_activity(since))
+                except Exception:
+                    log.warning("bot activity refresh failed", exc_info=True)
+            self._active_bots.prune()
 
         if self._limiter is not None:
             self._limiter.prune(RATE_BUCKET_IDLE_SECONDS)

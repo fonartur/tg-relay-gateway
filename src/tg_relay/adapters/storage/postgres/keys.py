@@ -30,7 +30,7 @@ class PostgresKeySource:
                 enabled=r["enabled"],
                 limits=Limits(
                     rate_per_second=r["rate_limit"],
-                    monthly_bots=r["monthly_bot_limit"],
+                    active_bots=r["monthly_bot_limit"],
                     monthly_bytes=r["monthly_byte_limit"],
                 ),
             )

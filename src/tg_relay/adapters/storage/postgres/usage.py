@@ -8,9 +8,10 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 
-from ....ports.usage import MonthUsage, UsageBatch
+from ....domain.models import ProjectId
+from ....ports.usage import BotActivity, MonthUsage, UsageBatch
 from .database import PostgresDatabase
 
 _SAVE_COUNTERS = """
@@ -36,21 +37,30 @@ class PostgresUsageRepository:
         self._db = database
 
     async def load_month(self, month: date) -> MonthUsage:
-        pool = self._db.pool
-        byte_rows = await pool.fetch(
+        rows = await self._db.pool.fetch(
             "SELECT project_id, bytes_in + bytes_out AS total FROM usage_counters WHERE month = $1",
-            month,
-        )
-        bot_rows = await pool.fetch(
-            "SELECT project_id, array_agg(fingerprint) AS fingerprints "
-            "FROM active_bots WHERE month = $1 GROUP BY project_id",
             month,
         )
         return MonthUsage(
             month=month,
-            bytes_by_project={r["project_id"]: int(r["total"]) for r in byte_rows},
-            bots_by_project={r["project_id"]: frozenset(r["fingerprints"]) for r in bot_rows},
+            bytes_by_project={r["project_id"]: int(r["total"]) for r in rows},
         )
+
+    async def load_bot_activity(self, since: datetime) -> BotActivity:
+        # На стыке месяцев у бота две строки — берём самую свежую.
+        rows = await self._db.pool.fetch(
+            """
+            SELECT project_id, fingerprint, max(last_seen) AS last_seen
+            FROM active_bots
+            WHERE last_seen >= $1
+            GROUP BY project_id, fingerprint
+            """,
+            since,
+        )
+        activity: dict[ProjectId, dict[str, datetime]] = {}
+        for r in rows:
+            activity.setdefault(r["project_id"], {})[r["fingerprint"]] = r["last_seen"]
+        return activity
 
     async def save(self, batch: UsageBatch) -> None:
         if not batch:

@@ -11,7 +11,7 @@ from tg_relay.domain.credentials import hash_project_key
 from tg_relay.domain.models import Limits, ProjectAccess, RequestOutcome
 from tg_relay.ports.stats import ErrorRecord, HourlyStats, LastRequest
 from tg_relay.ports.upstream import Header, UpstreamRequest
-from tg_relay.ports.usage import MonthUsage, UsageBatch
+from tg_relay.ports.usage import BotActivity, MonthUsage, UsageBatch
 
 T0 = datetime(2026, 9, 15, 12, 30, tzinfo=UTC)
 
@@ -80,12 +80,21 @@ class StaticSource:
 class MemoryUsageRepository:
     saved: list[UsageBatch] = field(default_factory=list)
     month_usage: MonthUsage | None = None
+    bot_activity: dict[int, dict[str, datetime]] = field(default_factory=dict)
     fail: bool = False
 
     async def load_month(self, month: date) -> MonthUsage:
         if self.fail:
             raise ConnectionError("db down")
-        return self.month_usage or MonthUsage(month, {}, {})
+        return self.month_usage or MonthUsage(month, {})
+
+    async def load_bot_activity(self, since: datetime) -> BotActivity:
+        if self.fail:
+            raise ConnectionError("db down")
+        return {
+            pid: {fp: seen for fp, seen in bots.items() if seen >= since}
+            for pid, bots in self.bot_activity.items()
+        }
 
     async def save(self, batch: UsageBatch) -> None:
         if self.fail:

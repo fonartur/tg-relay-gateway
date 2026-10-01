@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import date
+from datetime import date, timedelta
 
+from tg_relay.application.active_bots import ActiveBots
 from tg_relay.application.key_registry import KeyRegistry
 from tg_relay.application.stats_collector import StatsCollector
 from tg_relay.application.usage_ledger import UsageLedger
@@ -10,6 +11,7 @@ from tg_relay.application.workers import KeySync, PeriodicTask, StatsFlush, Usag
 from tg_relay.ports.usage import MonthUsage
 
 from ..support.fakes import (
+    T0,
     FrozenClock,
     MemoryStatsRepository,
     MemoryUsageRepository,
@@ -22,7 +24,7 @@ from ..support.fakes import (
 class TestKeySync:
     async def test_loads_keys_and_month_usage(self) -> None:
         record = access()
-        repo = MemoryUsageRepository(month_usage=MonthUsage(date(2026, 9, 1), {1: 42}, {}))
+        repo = MemoryUsageRepository(month_usage=MonthUsage(date(2026, 9, 1), {1: 42}))
         registry, ledger = KeyRegistry(), UsageLedger()
         sync = KeySync(
             source=StaticSource({record.key_hash: record}),
@@ -34,6 +36,41 @@ class TestKeySync:
         await sync.run()
         assert registry.size == 1
         assert ledger.bytes_used(1, date(2026, 9, 1)) == 42
+
+    async def test_restores_bot_activity_from_storage(self) -> None:
+        clock = FrozenClock()
+        active = ActiveBots(timedelta(minutes=5), clock)
+        repo = MemoryUsageRepository(
+            bot_activity={
+                1: {"recent": T0 - timedelta(minutes=1), "stale": T0 - timedelta(hours=1)}
+            }
+        )
+        sync = KeySync(
+            source=StaticSource({}),
+            registry=KeyRegistry(),
+            usage=repo,
+            ledger=UsageLedger(),
+            active_bots=active,
+            clock=clock,
+        )
+        await sync.run()
+        assert active.is_active(1, "recent")
+        assert active.count(1) == 1
+
+    async def test_activity_failure_keeps_local_bots(self) -> None:
+        clock = FrozenClock()
+        active = ActiveBots(timedelta(minutes=5), clock)
+        active.touch(1, "local")
+        sync = KeySync(
+            source=StaticSource({}),
+            registry=KeyRegistry(),
+            usage=MemoryUsageRepository(fail=True),
+            ledger=UsageLedger(),
+            active_bots=active,
+            clock=clock,
+        )
+        await sync.run()
+        assert active.is_active(1, "local")
 
     async def test_source_failure_keeps_last_known_keys(self) -> None:
         record = access()

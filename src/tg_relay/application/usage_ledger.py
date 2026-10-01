@@ -1,4 +1,4 @@
-"""Учёт потребления для тарификации: трафик и активные боты за месяц.
+"""Учёт потребления для тарификации: трафик и работавшие боты.
 
 Счётчики копятся в памяти и сбрасываются пачками. Потеря части учёта при
 аварии узла допустима — простой ботов недопустим.
@@ -10,6 +10,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date
 
+from ..domain.errors import QuotaExceeded
 from ..domain.models import ProjectId, RequestOutcome
 from ..ports.usage import BotSighting, MonthUsage, UsageBatch, UsageDelta
 
@@ -28,16 +29,16 @@ class UsageLedger:
 
     Держит два вида данных:
 
-    * **дельты к сбросу** — что этот узел насчитал с прошлого сброса;
-    * **итоги месяца** — сколько проект уже потратил (по данным всех узлов
-      плюс локальный прирост); по ним проверяются лимиты тарифа.
+    * **дельты к сбросу** — запросы, трафик и боты, которых этот узел
+      насчитал с прошлого сброса;
+    * **трафик месяца** — сколько проект уже потратил (по данным всех узлов
+      плюс локальный прирост); по нему проверяется лимит трафика.
     """
 
     def __init__(self) -> None:
         self._pending: defaultdict[_Key, _Counter] = defaultdict(_Counter)
         self._pending_bots: defaultdict[_Key, set[str]] = defaultdict(set)
         self._month_bytes: defaultdict[_Key, int] = defaultdict(int)
-        self._month_bots: defaultdict[_Key, set[str]] = defaultdict(set)
 
     # ------------------------------------------------------ RequestObserver
 
@@ -55,38 +56,33 @@ class UsageLedger:
         counter.bytes_out += outcome.bytes_out
         self._month_bytes[key] += outcome.bytes_in + outcome.bytes_out
 
-        fingerprint = outcome.fingerprint
-        if fingerprint and fingerprint not in self._month_bots[key]:
-            self._month_bots[key].add(fingerprint)
-            self._pending_bots[key].add(fingerprint)
+        # Бот, которому отказали по лимиту тарифа, ботом проекта не становится:
+        # иначе отказ записал бы его в работающие, и следующий запрос прошёл бы.
+        rejected_by_quota = (
+            outcome.rejection is not None and outcome.rejection.reason == QuotaExceeded.reason
+        )
+        if outcome.fingerprint and not rejected_by_quota:
+            # Бот попадает в каждую пачку, где он работал: так хранилище знает
+            # момент его последней активности.
+            self._pending_bots[key].add(outcome.fingerprint)
 
-    # -------------------------------------------------------- лимиты тарифа
+    # -------------------------------------------------------- лимит трафика
 
     def bytes_used(self, project_id: ProjectId, month: date) -> int:
         return self._month_bytes.get((project_id, month), 0)
 
-    def bots_used(self, project_id: ProjectId, month: date) -> int:
-        return len(self._month_bots.get((project_id, month), ()))
-
-    def knows_bot(self, project_id: ProjectId, month: date, fingerprint: str) -> bool:
-        return fingerprint in self._month_bots.get((project_id, month), ())
-
     def sync(self, snapshot: MonthUsage) -> None:
-        """Подтянуть итоги месяца из хранилища (там учтены все узлы).
+        """Подтянуть трафик месяца из хранилища (там учтены все узлы).
 
         Итоги только растут: локальный прирост, ещё не сброшенный в хранилище,
         не теряется. Итоги прошлых месяцев выбрасываются.
         """
         month = snapshot.month
-        for totals in (self._month_bytes, self._month_bots):
-            for key in [k for k in totals if k[1] != month]:
-                del totals[key]
-
+        for key in [k for k in self._month_bytes if k[1] != month]:
+            del self._month_bytes[key]
         for project_id, total in snapshot.bytes_by_project.items():
             key = (project_id, month)
             self._month_bytes[key] = max(self._month_bytes.get(key, 0), total)
-        for project_id, fingerprints in snapshot.bots_by_project.items():
-            self._month_bots[(project_id, month)] |= fingerprints
 
     # --------------------------------------------------------------- сброс
 

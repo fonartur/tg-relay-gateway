@@ -2,19 +2,27 @@
 
 Обязательные поля: ``ts``, ``level``, ``logger``, ``node``, ``msg``.
 
-Access-лог uvicorn и INFO-лог httpx отключаются намеренно: они пишут полный
-URL, а в URL лежит токен бота. Включить их — значит слить чужие секреты
-в журнал.
+Защита секретов в два эшелона:
+
+1. Access-лог uvicorn и INFO-лог httpx отключаются: они пишут полный URL,
+   а в URL лежит токен бота и ключ проекта.
+2. Каждая запись лога — в любом логгере, при любой настройке логирования,
+   включая текст исключений, — проходит маскировку :func:`redact`. Это
+   страховка на случай, когда логирование настроено в обход
+   :func:`configure_logging` (свой ``dictConfig``, отладка, встраивание шлюза
+   в чужое приложение).
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import re
 import sys
 from datetime import UTC, datetime
-from typing import Literal
+from typing import Any, Literal
 
+from ...domain.credentials import KEY_PREFIX
 from ...domain.models import RequestOutcome
 
 LogFormat = Literal["json", "text"]
@@ -25,6 +33,47 @@ _STANDARD_ATTRS = frozenset(logging.LogRecord("", 0, "", 0, "", (), None).__dict
     "taskName",
     "color_message",  # uvicorn дублирует сообщение с ANSI-цветами
 }
+
+
+_SECRET_PATTERNS = (
+    # Токен бота в пути Bot API: bot123456:AA…
+    (re.compile(r"bot\d+:[A-Za-z0-9_-]+"), "bot<redacted>"),
+    # Ключ проекта в пути шлюза: /k/<KEY>/…
+    (re.compile(r"/k/[^/\s?\"']+"), "/k/<redacted>"),
+    # Ключ проекта сам по себе.
+    (re.compile(re.escape(KEY_PREFIX) + r"[A-Za-z0-9_-]+"), KEY_PREFIX + "<redacted>"),
+)
+
+
+def redact(text: str) -> str:
+    """Замаскировать токены ботов и ключи проектов в тексте."""
+    for pattern, replacement in _SECRET_PATTERNS:
+        text = pattern.sub(replacement, text)
+    return text
+
+
+def protect_secrets_in_logs() -> None:
+    """Маскировать секреты в сообщении каждой новой записи лога.
+
+    Ставит фабрику записей поверх текущей; повторный вызов ничего не меняет.
+    """
+    base = logging.getLogRecordFactory()
+    if getattr(base, "_redacts_secrets", False):
+        return
+
+    def factory(*args: Any, **kwargs: Any) -> logging.LogRecord:
+        record = base(*args, **kwargs)
+        try:
+            message = record.getMessage()
+        except Exception:
+            return record  # кривые аргументы — пусть ошибка всплывёт там, где её ждут
+        clean = redact(message)
+        if clean != message:
+            record.msg, record.args = clean, None
+        return record
+
+    factory._redacts_secrets = True  # type: ignore[attr-defined]
+    logging.setLogRecordFactory(factory)
 
 
 class JsonFormatter(logging.Formatter):
@@ -45,15 +94,21 @@ class JsonFormatter(logging.Formatter):
                 payload[key] = value
         if record.exc_info:
             payload["exc"] = self.formatException(record.exc_info)
-        return json.dumps(payload, ensure_ascii=False, default=str)
+        # Traceback и extra-поля проходят мимо фабрики записей — чистим итог.
+        return redact(json.dumps(payload, ensure_ascii=False, default=str))
+
+
+class TextFormatter(logging.Formatter):
+    def __init__(self, node: str) -> None:
+        super().__init__(f"%(asctime)s %(levelname)s [{node}] %(name)s: %(message)s")
+
+    def format(self, record: logging.LogRecord) -> str:
+        return redact(super().format(record))
 
 
 def configure_logging(level: str, fmt: LogFormat, node: str) -> None:
-    formatter: logging.Formatter = (
-        JsonFormatter(node)
-        if fmt == "json"
-        else logging.Formatter(f"%(asctime)s %(levelname)s [{node}] %(name)s: %(message)s")
-    )
+    protect_secrets_in_logs()
+    formatter: logging.Formatter = JsonFormatter(node) if fmt == "json" else TextFormatter(node)
     handler = logging.StreamHandler(sys.stdout)
     handler.setFormatter(formatter)
 

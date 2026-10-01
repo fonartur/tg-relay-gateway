@@ -43,6 +43,9 @@ class Settings:
     max_body_bytes: int = 60 * MIB
 
     enforce_limits: bool = True
+    #: Бот считается работающим (и занимает место в лимите ботов), если
+    #: обращался к шлюзу за последние столько секунд.
+    active_bot_window: float = 300.0
     stats_enabled: bool = True
     key_cache_ttl: float = 30.0
     usage_flush_interval: float = 10.0
@@ -78,6 +81,7 @@ class Settings:
             max_connections=reader.get("MAX_CONNECTIONS", int, cls.max_connections),
             max_body_bytes=reader.get("MAX_BODY_BYTES", int, cls.max_body_bytes),
             enforce_limits=reader.get("ENFORCE_LIMITS", _parse_bool, cls.enforce_limits),
+            active_bot_window=reader.get("ACTIVE_BOT_WINDOW", float, cls.active_bot_window),
             stats_enabled=reader.get("STATS_ENABLED", _parse_bool, cls.stats_enabled),
             key_cache_ttl=reader.get("KEY_CACHE_TTL", float, cls.key_cache_ttl),
             usage_flush_interval=reader.get(
@@ -116,6 +120,7 @@ class Settings:
             "UPSTREAM_CONNECT_TIMEOUT": self.upstream_connect_timeout,
             "UPSTREAM_WRITE_TIMEOUT": self.upstream_write_timeout,
             "KEY_CACHE_TTL": self.key_cache_ttl,
+            "ACTIVE_BOT_WINDOW": self.active_bot_window,
             "USAGE_FLUSH_INTERVAL": self.usage_flush_interval,
             "LAST_REQUEST_FLUSH_INTERVAL": self.last_request_flush_interval,
         }

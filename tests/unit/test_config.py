@@ -15,6 +15,12 @@ def test_defaults_in_autonomous_mode() -> None:
     assert settings.listen_port == 8080
 
 
+def test_active_bot_window() -> None:
+    assert Settings.from_env({"BOOTSTRAP_KEY": KEY}).active_bot_window == 300.0
+    env = {"BOOTSTRAP_KEY": KEY, "ACTIVE_BOT_WINDOW": "120"}
+    assert Settings.from_env(env).active_bot_window == 120.0
+
+
 def test_database_mode() -> None:
     settings = Settings.from_env({"DATABASE_URL": "postgres://x"})
     assert not settings.autonomous
@@ -61,6 +67,7 @@ def test_boolean_flags(raw: str, expected: bool) -> None:
         {"BOOTSTRAP_KEY": KEY, "MAX_BODY_BYTES": "0"},
         {"BOOTSTRAP_KEY": KEY, "ENFORCE_LIMITS": "maybe"},
         {"BOOTSTRAP_KEY": KEY, "UPSTREAM_READ_TIMEOUT": "-1"},
+        {"BOOTSTRAP_KEY": KEY, "ACTIVE_BOT_WINDOW": "0"},
     ],
 )
 def test_invalid_configuration_fails_fast(env: dict[str, str]) -> None:

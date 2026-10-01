@@ -16,6 +16,7 @@ services:
       UPSTREAM_URL: ${UPSTREAM_URL:-https://api.telegram.org}
       UPSTREAM_READ_TIMEOUT: "0"   # 0 = без ограничения; иначе ломается long polling
       ENFORCE_LIMITS: ${ENFORCE_LIMITS:-true}
+      ACTIVE_BOT_WINDOW: ${ACTIVE_BOT_WINDOW:-300}
       STATS_ENABLED: ${STATS_ENABLED:-true}
       NODE_NAME: ${NODE_NAME:-edge-1}
       LOG_FORMAT: ${LOG_FORMAT:-json}

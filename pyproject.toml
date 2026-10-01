@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "tg-relay"
-version = "1.0.0"
+version = "1.1.0"
 description = "Прозрачный HTTP-шлюз к Telegram Bot API: меняете базовый URL — и всё работает"
 readme = "README.md"
 license = "MIT"

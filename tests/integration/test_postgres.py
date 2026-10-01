@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from dataclasses import replace
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 
 import asyncpg
 import pytest
@@ -85,7 +85,26 @@ async def test_usage_is_added_not_overwritten(db: PostgresDatabase) -> None:
 
     usage = await repo.load_month(SEPTEMBER)
     assert usage.bytes_by_project[project_id] == 60
-    assert usage.bots_by_project[project_id] == frozenset({"fp1"})
+    activity = await repo.load_bot_activity(datetime.now(UTC) - timedelta(minutes=1))
+    assert set(activity[project_id]) == {"fp1"}
+
+
+async def test_bot_activity_window(db: PostgresDatabase) -> None:
+    project_id, _ = await ProjectAdmin(db).create_project("p", Limits())
+    await db.pool.execute(
+        """
+        INSERT INTO active_bots (project_id, month, fingerprint, last_seen) VALUES
+            ($1, '2026-08-01', 'recent', now() - interval '1 minute'),
+            ($1, '2026-09-01', 'recent', now() - interval '10 seconds'),
+            ($1, '2026-09-01', 'stale',  now() - interval '1 hour')
+        """,
+        project_id,
+    )
+    activity = await PostgresUsageRepository(db).load_bot_activity(
+        datetime.now(UTC) - timedelta(minutes=5)
+    )
+    assert set(activity[project_id]) == {"recent"}  # строки двух месяцев слились в одну
+    assert datetime.now(UTC) - activity[project_id]["recent"] < timedelta(minutes=1)
 
 
 async def test_rows_of_deleted_projects_are_skipped(db: PostgresDatabase) -> None:
@@ -180,3 +199,29 @@ async def test_limits_are_enforced(db_settings: Settings, make_gateway: GatewayF
     assert second.status_code == 429
     assert second.json()["description"] == "Too Many Requests: gateway rate limit"
     assert int(second.headers["retry-after"]) >= 1
+
+
+async def test_bot_limit_survives_restart(
+    db_settings: Settings, make_gateway: GatewayFactory
+) -> None:
+    """Лимит одновременных ботов: отказ не занимает места, а после рестарта узла
+    работавший бот по-прежнему держит своё место (активность берётся из базы)."""
+    database = PostgresDatabase(db_settings.database_url or "")
+    await database.connect()
+    await database.migrate()
+    _, key = await ProjectAdmin(database).create_project("one-bot", Limits(active_bots=1))
+    await database.close()
+
+    settings = replace(db_settings, bootstrap_key=None, enforce_limits=True)
+    bot_a, bot_b = f"/k/{key}/bot111:first/getMe", f"/k/{key}/bot222:second/getMe"
+
+    async with make_gateway(settings, key) as gw:
+        assert (await gw.http.get(bot_a)).status_code == 200
+        for _ in range(2):  # регрессия: второй запрос отклонённого бота не проходит
+            r = await gw.http.get(bot_b)
+            assert r.status_code == 402
+            assert r.json()["description"] == "Payment Required: tariff limit exceeded"
+
+    async with make_gateway(settings, key) as gw:  # рестарт узла
+        assert (await gw.http.get(bot_b)).status_code == 402
+        assert (await gw.http.get(bot_a)).status_code == 200

@@ -12,9 +12,13 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Awaitable, Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
-from .adapters.observability import ErrorLogObserver, PrometheusMetrics
+from .adapters.observability import (
+    ErrorLogObserver,
+    PrometheusMetrics,
+    protect_secrets_in_logs,
+)
 from .adapters.storage.postgres import (
     PostgresDatabase,
     PostgresKeySource,
@@ -24,6 +28,7 @@ from .adapters.storage.postgres import (
 )
 from .adapters.storage.static import StaticKeySource
 from .adapters.upstream import HttpxUpstream, UpstreamOptions
+from .application.active_bots import ActiveBots
 from .application.filters import (
     AuthFilter,
     BodyLimitFilter,
@@ -60,6 +65,9 @@ class Gateway:
         upstream: HttpxUpstream | None = None,
         clock: Callable[[], datetime] = utc_now,
     ) -> None:
+        # Маскировка секретов в логах — даже если шлюз встроен в приложение
+        # со своей настройкой логирования и configure_logging не вызывался.
+        protect_secrets_in_logs()
         self.settings = settings
         self.keys = KeyRegistry()
         self.node = NodeState(self.keys)
@@ -94,17 +102,22 @@ class Gateway:
             key_source = PostgresKeySource(self._database)
             usage_repo = PostgresUsageRepository(self._database)
             ledger = UsageLedger()
+            active_bots = ActiveBots(timedelta(seconds=settings.active_bot_window), clock)
             limiter = RateLimiter()
             observers.append(ledger)
 
             if settings.enforce_limits:
-                filters += [QuotaFilter(ledger, clock), RateLimitFilter(limiter)]
+                filters += [
+                    QuotaFilter(ledger, active_bots, clock),
+                    RateLimitFilter(limiter),
+                ]
 
             self._key_sync = KeySync(
                 source=key_source,
                 registry=self.keys,
                 usage=usage_repo,
                 ledger=ledger,
+                active_bots=active_bots,
                 limiter=limiter,
                 clock=clock,
             )

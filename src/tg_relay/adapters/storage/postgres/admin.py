@@ -37,7 +37,7 @@ class ProjectAdmin:
                 """,
                 name,
                 limits.rate_per_second,
-                limits.monthly_bots,
+                limits.active_bots,
                 limits.monthly_bytes,
             )
             await conn.execute(
